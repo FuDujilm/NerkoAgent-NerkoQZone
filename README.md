@@ -1,170 +1,137 @@
-# Maizone（麦麦空间） 插件
+# Maizone (QZone) 插件 — Nerko Agent 版本
 
+Maizone 是一个为 Nerko Agent 设计的 QQ 空间自动化插件，支持自动发说说、读取好友动态、点赞评论以及定时运营。该版本基于 Nerko Agent 插件开发框架重构，兼容原 MaiBot 插件的核心能力，并提供 Nerko Agent 原生的沙箱能力与模型调用方式。
 
-> [!IMPORTANT]
->
-> 由于近期出现对公开端口的恶性攻击，为了您的安全，请设置Token。操作方法：在设置http服务器时面板最下方的Token栏中填入密码，在生成的config.toml文件中填写该密码
+## 功能概览
 
-<u>制作者水平稀烂，任何疑问或bug或建议请联系qq：1523640161</u>
+- **发送说说**：通过沙箱工具或流程自动撰写并发布说说，可选择附带 AI 图片或表情包。
+- **读取说说**：读取指定 QQ 号的最近动态，并根据配置执行点赞、评论等互动。
+- **自动监控**：定时检查好友动态，支持自动评论、回复与点赞。
+- **定时发送**：按照设定的时间表生成并发布说说，支持随机波动与固定主题。
+- **AI 能力集成**：接入 Nerko Agent 模型路由，可结合模型组配置文本与图片生成。
 
-## 概述
-Maizone（麦麦空间）插件v2.4.5，让你的麦麦发说说，读QQ空间，点赞评论！
+## 环境要求
 
-## 功能
-- **发说说**: 当用户说"说说"、"qq空间"、"动态"时麦麦会决定是否发说说和说说的主题
+- 已安装并运行的 Nerko Agent（>= 0.8 版本，支持插件系统）。
+- 可访问 QQ 空间的 Napcat HTTP 服务（或已获取的持久 Cookie）。
+- 如需 AI 生图，请准备 SiliconFlow 或 ModelScope 的 API Key。
 
-- **说说配图**：可以从已注册表情包中选择，或用ai生成配图，或随机选择
+## 安装与启用
 
-- **读说说**：当用户要求麦麦读说说、qq空间，并指定目标的qq昵称时，麦麦会获取该目标账号最近的动态并点赞评论
-
-- **权限管理**：在config.toml中指定谁可以让麦麦读说说或发说说
-
-- **自动阅读**：开启此功能让麦麦秒赞秒评新说说，回复评论
-
-- **定时发送**：开启此功能让麦麦定时发说说
-
-## 使用方法
-### 安装插件
-
-1. 下载或克隆本仓库（麦麦旧版本可在release中下载适配旧版的插件）
-
+1. 将插件代码放置在 Nerko Agent 的插件目录中：
    ```bash
-   git clone https://github.com/internetsb/Maizone.git
+   cd /path/to/nerko-agent/plugins
+   git clone https://github.com/internetsb/Maizone.git nerkoqzone
    ```
+   目录名可自定义，但需保证 `plugin.py` 位于插件根目录。
 
-2. 将`Maizone\`文件夹放入`MaiBot\plugins`文件夹下
+2. 重新启动 Nerko Agent。启动日志应显示注册了 `Maizone (QZone)` 插件。
 
-3. 安装相应依赖(部分依赖MaiBot已安装)，示例：
+3. 在 Nerko Agent 控制台或 Web 配置界面中启用插件，并打开配置面板。Nerko Agent 的插件管理与配置界面可参考官方文档：
+   - [插件介绍](https://doc.nekro.ai/docs/04_plugin_dev/00_introduction.html)
+   - [插件快速上手](https://doc.nekro.ai/docs/04_plugin_dev/01_quick_start.html)
 
-   ```bash
-   #pip安装，在MaiBot文件夹下
-   .\venv\Scripts\activate
-   cd .\plugins\Maizone\
-   pip install -i https://mirrors.aliyun.com/pypi/simple -r .\requirements.txt --upgrade
-   #uv安装，在plugins\Maizone文件夹下
-   uv pip install -r .\requirements.txt -i https://mirrors.aliyun.com/pypi/simple --upgrade
-   #一键包用户可在启动时选择交互式安装pip模块，安装bs4和json5
-   #docker安装，宿主机内
-   docker exec -it maim-bot-core uv pip install bs4 json5 --system
-   ```
+4. 首次启用后，进入插件配置页填写 Napcat Host、Port 以及 Napcat Token 等必要信息。
 
-4. 启动一次麦麦自动生成`config.toml`配置文件，成功生成配置文件即说明读取插件成功（未生成配置文件请检查启动麦麦时的加载插件日志）
+## 配置说明
 
-### 设置Napcat http服务器端口以获取cookie
+所有配置均通过 Nerko Agent 的插件配置 UI（或 `config.json` 导出文件）管理。主要字段如下：
 
-![](images/done_napcat1.png)
+### Napcat / QZone 访问
 
-![](images/done_napcat2.png)
+| 字段 | 说明 |
+| ---- | ---- |
+| `plugin_http_host` | Napcat HTTP 服务 Host（默认 `127.0.0.1`）。 |
+| `plugin_http_port` | Napcat HTTP 服务端口（默认 `9999`）。 |
+| `plugin_napcat_token` | 若 Napcat 启用了 Token 验证，请填写对应口令。 |
 
-启用后在配置文件config.toml（若无则先启动一次）中填写上在napcat中设置的host（默认127.0.0.1）和端口号（默认9999）用于获取cookie
+当 Napcat 无法访问时，可在插件目录下的 `cookies-*.json` 填入手工抓取的 Cookie，或在 UI 中关闭自动刷新，由插件读取本地 Cookie。
 
-**B方案：Napcat连接失败后启用，请确保QQ客户端在同一机器上启动，并登录qq空间**
+### 模型与 AI 设置
 
-**C方案：B方案失败后启用，请用botQQ扫描插件目录下的二维码登录（有效期约一天）**
+| 字段 | 说明 |
+| ---- | ---- |
+| `TEXT_MODEL_GROUP` | Nerko Agent 模型组（chat 类型）。会用于列出可选的文本模型。 |
+| `models_text_model` | 具体的文本模型名称，默认 `replyer`。 |
+| `models_api_key` | 外部服务（如 SiliconFlow）所需的 API Key。 |
+| `models_show_prompt` | 是否在日志中输出生成提示词。 |
+| `models_image_provider` | 生图服务提供商（`SiliconFlow` 或 `ModelScope`）。 |
+| `models_image_model` | 生图模型名称。 |
+| `models_image_ref` | 是否附带参考图（将 `images/done_ref.xxx` 作为参考）。 |
 
-**D方案：读取已保存的cookie，可手动填写，[如何获取QQ空间cookie？](https://www.xjr7670.com/articles/how-to-get-qzone-cookie.html)**
+> **提示**：插件会优先通过 `TEXT_MODEL_GROUP` 获取 Nerko Agent 的模型列表。如未配置模型组，将回退到 `models_text_model` 提供的名称。
 
+### 监控与定时任务
 
+| 字段 | 说明 |
+| ---- | ---- |
+| `monitor_enable_auto_monitor` | 启用自动监控说说。 |
+| `monitor_enable_auto_reply` | 是否自动回复自己说说下的评论。 |
+| `monitor_interval_minutes` | 监控轮询间隔（分钟）。 |
+| `monitor_self_readnum` | 自身说说读取条数，用于判断是否有新评论。 |
+| `schedule_enable_schedule` | 启用定时发说说。 |
+| `schedule_schedule_times` | 每日计划发送时间（HH:MM）。 |
+| `schedule_fluctuation_minutes` | 随机波动范围（分钟）。 |
+| `schedule_random_topic` | 定时发送时是否随机主题。 |
+| `schedule_fixed_topics` | 备用主题列表。 |
 
-> [!IMPORTANT]
->
-> **Docker部署使用方法**
->
-> 将Napcat设置的HTTP Server的Host栏改为0.0.0.0，插件的config.toml中的http_host栏改为"napcat"（注意引号）。经测试可正常使用
->
-> **NapCat设置**
->
-> ![](images/done_docker_napcat.png)
->
-> **插件config设置**
->
-> ![](images/done_docker_config.png)
->
-> **正常监听后的日志显示**
->
-> ![](images/done_docker_log.png)
-### 修改配置文件
-请检查：
-1. MaiBot/config/bot_config.toml中qq_account是否为bot的QQ号
-请设置：
+其他历史配置（权限名单、阅读数量、概率设置等）保持与旧版一致，仅字段命名由 `section.field` 自动映射到 Nerko Agent 配置。
 
-1. 是否启用插件及各种功能
-2. 是否启用说说配图和ai生成配图（及相应的api_key）
-3. 权限名单及类型
+## 在 Agent 中使用
 
-更多配置请看config.toml中的注释
+### 沙箱工具
 
-### （可选）AI生图
+插件提供两个沙箱工具，可在对话流程、自动化任务或手动测试中调用：
 
-1. 注册登录ModelScope或SiliconFlow，获取访问令牌/APIkey
+- `发送说说`：输入文本后，插件会根据配置自动选择图片并发布说说。
+- `读取说说`：输入目标 QQ 号和读取条数，返回最近动态列表。
 
-2. 从模型库中选择文生图（若开启参考图则选择图生图）标签的模型，复制名称
+这些方法的签名符合 Nerko Agent 的 `SandboxMethodType.TOOL` 规范，可在工作流中直接引用。
 
-3. 填写至config.toml的models栏
+### 自动任务
 
-4. （可选）若有bot的人设图或者头像之类的，保存图片并命名为"done_ref.xxx"（xxx可为jpg,png等等）放入插件的images目录下，修改config.toml的image_ref为true，即可尝试让ai参考该图来生成图片（需要图生图模型）
+插件在初始化时根据配置自动启动两个后台任务：
 
-   **个人推荐：**
+1. **FeedMonitor**：周期性调用 `monitor_read_feed`，自动处理点赞、评论以及回复逻辑。
+2. **ScheduleSender**：根据时间表自动生成并发布说说。
 
-   ModelScope的Qwen/Qwen-Image-Edit，我只测试了这个，若遇到不能使用的模型请联系我
+在禁用插件或关闭对应配置后，后台任务会自动停止。
 
-   SiliconFlow只推荐Kwai-Kolors/Kolors，个人感觉效果不如Qwen，但硅基流动的Qwen三毛一张图
+## 调试与 `/exec` 用法
 
-   若不在意价格，你也可以更换供应商，自行修改utils.py中的generate_image函数，将生成的图片保存至image_dir即可
+Nerko Agent 在聊天窗口或控制台中提供了 `/exec` 命令，便于直接触发插件暴露的沙箱方法。Maizone 插件注册了 `发送说说` 与 `读取说说` 两个工具方法，可以按照以下格式调试：
 
-### 快速开始
-**配置权限**：在config.toml中分别填写上send和read模块中的权限名单和类型
+```text
+/exec plugin="Maizone (QZone)" method="发送说说" args='{"message": "今天也要记得打卡！"}'
+```
 
-**发说说**：向麦麦发送命令：`/send_feed` 或说 “发条说说吧”/“发一条你今天心情的说说” 正常情况下，等待几秒后麦麦将发送一条相应主题的说说至QQ空间
+- `plugin`：填写插件的展示名称 `Maizone (QZone)`（或插件管理页面中显示的名称）。
+- `method`：使用沙箱工具名称（如 `发送说说` 或 `读取说说`）。
+- `args`：JSON 格式传参，对应工具函数的参数。示例中 `message` 会传递给 `send_feed_tool`。
 
-**读说说**：对麦麦说：“读一下我的QQ空间”/“评价一下@xxx的空间”，麦麦将会对其近几条评论进行点赞评论
+调试读取接口时，可以这样调用：
 
-**自动看说说**：在config.toml中monitor开启，麦麦会自动阅读新说说并点赞、评论（并回复自己说说下的评论）
+```text
+/exec plugin="Maizone (QZone)" method="读取说说" args='{"target_qq": "123456", "num": 3}'
+```
 
-**定时发说说**：在config.toml中schedule开启，麦麦会定时发送说说
+> 提示：在 `/exec` 命令中，JSON 字符串需要使用单引号包裹，避免与聊天窗口的双引号冲突。如需查看插件日志，可同时在 Agent 的控制台查看 `Maizone` 相关输出，便于定位请求或配置问题。
 
-**（可选）给项目star**：（不给也可以）
+## AI 工作流说明
+
+- 文本生成：插件通过 Nerko Agent 的沙箱模型接口调用所选模型。若模型组为空或模型名称无效，将记录错误日志并跳过该步骤。
+- 图片生成：启用 AI 配图后，插件会根据 `models_image_provider` 调用对应 API，并支持参考图能力。失败时会回退到表情包模式。
+- 所有模型调用均运行在沙箱内，遵循 Nerko Agent 的上下文与审计机制，详见 [系统 API 参考](https://doc.nekro.ai/docs/04_plugin_dev/04_system_api_reference.html)。
 
 ## 常见问题
-- **Q：所有功能都无法正常运行**
 
-  **A：请检查是否生成cookie，cookie名称与内容中的qq号是否正确，MaiBot/config/bot_config.toml中qq_account是否填写正确**
-  
-- **Q：我发了一条说说，但bot没有回复**
+- **无法刷新 Cookie**：确认 Napcat HTTP 端口可访问、Token 正确且 QQ 客户端在线。必要时将 `cookies-*.json` 替换为人工抓取的 Cookie。
+- **模型调用失败**：检查是否在 Nerko Agent 中配置了对应模型组/模型，并确认已为外部服务填入 API Key。
+- **AI 生图失败**：确认所选模型支持当前请求（例如 `Kwai-Kolors/Kolors` 支持多图），并确保图片目录具有写入权限。
 
-  **A：bot无法阅读相册上传、小程序分享、过早的说说，且某些说说（比如新加的好友）需要多次才能读到，具体读取情况以日志为准**
+## 致谢
 
-- **Q：No module named 'plugins.Maizone-2'**
+- 原 MaiBot 插件作者及贡献者。
+- [qzone-toolkit](https://github.com/gfhdhytghd/qzone-toolkit) 项目提供的部分 API 实现。
 
-  **A：'.'导致被错误地识别为了包，请重命名文件夹为Maizone**
-
-- **Q：No module named 'bs4'**
-
-  **A：安装依赖失败，请确保在MaiBot运行的环境下，按照安装麦麦时的方法，选择恰当的给出的方式安装依赖**
-
-- **Q：如何更改使用的模型配置**
-
-  **A：请查看MaiBot/config/model_config.toml，默认使用**
-
-  ```
-  [model_task_config.replyer] # 首要回复模型，还用于表达器和表达方式学习
-  model_list = ["xxxxxx"]
-  temperature = xxx
-  max_tokens = xxx
-  ```
-
-  **可更换为配置的utils、utils_small、tool_use等模型**
-
-- **其余问题请联系作者修复或解决**
-
-## 鸣谢
-
-[MaiBot](https://github.com/MaiM-with-u/MaiBot)
-
-部分代码来自仓库：[qzone-toolkit](https://github.com/gfhdhytghd/qzone-toolkit)
-
-感谢[xc94188](https://github.com/xc94188)、[myxxr](https://github.com/myxxr)、[UnCLAS-Prommer](https://github.com/UnCLAS-Prommer)、[XXXxx7258](https://github.com/XXXxx7258)提供的功能改进
-
-魔改版麦麦，集成了魔改版插件[MoFox_Bot](https://github.com/MoFox-Studio/MoFox_Bot)
-
-
+如有问题或建议，欢迎通过 Issue 提交反馈。
