@@ -97,6 +97,26 @@ Maizone 是一个为 Nerko Agent 设计的 QQ 空间自动化插件，支持自�
 
 在禁用插件或关闭对应配置后，后台任务会自动停止。
 
+## 调试与 `/exec` 用法
+
+Nerko Agent 在聊天窗口或控制台中提供了 `/exec` 命令，便于直接触发插件暴露的沙箱方法。Maizone 插件注册了 `发送说说` 与 `读取说说` 两个工具方法，可以按照以下格式调试：
+
+```text
+/exec plugin="Maizone (QZone)" method="发送说说" args='{"message": "今天也要记得打卡！"}'
+```
+
+- `plugin`：填写插件的展示名称 `Maizone (QZone)`（或插件管理页面中显示的名称）。
+- `method`：使用沙箱工具名称（如 `发送说说` 或 `读取说说`）。
+- `args`：JSON 格式传参，对应工具函数的参数。示例中 `message` 会传递给 `send_feed_tool`。
+
+调试读取接口时，可以这样调用：
+
+```text
+/exec plugin="Maizone (QZone)" method="读取说说" args='{"target_qq": "123456", "num": 3}'
+```
+
+> 提示：在 `/exec` 命令中，JSON 字符串需要使用单引号包裹，避免与聊天窗口的双引号冲突。如需查看插件日志，可同时在 Agent 的控制台查看 `Maizone` 相关输出，便于定位请求或配置问题。
+
 ## AI 工作流说明
 
 - 文本生成：插件通过 Nerko Agent 的沙箱模型接口调用所选模型。若模型组为空或模型名称无效，将记录错误日志并跳过该步骤。
