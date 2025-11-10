@@ -15,6 +15,7 @@ from . import utils as qzone_utils
 from .qzone_api import ensure_qzone_api
 from .scheduled_tasks import FeedMonitor, ScheduleSender
 from src.plugin_system.apis import llm_api
+from .scheduled_tasks import FeedMonitor, ScheduleSender
 from src.plugin_system.core import component_registry
 
 
@@ -267,66 +268,6 @@ def qzone_diag() -> str:
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(_run_qzone_diag_async())
-    finally:
-        loop.close()
-
-
-async def _run_qzone_live_post_async(content: Optional[str] = None) -> str:
-    """向后兼容的实时发说说入口。"""
-
-    try:
-        cfg = plugin.get_config(QzoneConfig)
-    except Exception as exc:  # pragma: no cover - 配置异常极少发生
-        core.logger.error(f"获取插件配置失败: {exc}")
-        return f"error: {exc}"
-
-    if content:
-        try:
-            image_dir = str(Path(__file__).parent.resolve() / "images")
-            ok = await qzone_utils.send_feed(
-                content,
-                image_dir,
-                cfg.send_enable_image,
-                cfg.send_image_mode,
-                cfg.send_ai_probability,
-                cfg.send_image_number,
-            )
-            return "success" if ok else "failed: 发送说说失败"
-        except Exception as exc:  # pragma: no cover - 网络/IO 异常
-            core.logger.error(f"qzone_live_post 发送自定义说说失败: {exc}")
-            return f"error: {exc}"
-
-    adapter = AdapterPlugin(plugin)
-    scheduler = ScheduleSender(adapter)
-
-    try:
-        result = await scheduler.send_scheduled_feed()
-    except Exception as exc:  # pragma: no cover - 捕获定时任务内部异常
-        core.logger.error(f"qzone_live_post 生成定时说说失败: {exc}")
-        return f"error: {exc}"
-
-    if isinstance(result, tuple):
-        success = bool(result[0])
-        detail_msg = result[1] if len(result) > 1 else ""
-        if not success:
-            detail = str(detail_msg or "未知错误")
-            return f"failed: {detail}"
-
-    return "success"
-
-
-def qzone_live_post(content: Optional[str] = None) -> str:
-    """兼容旧版 `/exec qzone_live_post()` 调试命令的同步入口。"""
-
-    try:
-        return asyncio.run(_run_qzone_live_post_async(content))
-    except RuntimeError as exc:  # pragma: no cover - 仅在已有事件循环时触发
-        if "asyncio.run()" not in str(exc):
-            raise
-
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run_qzone_live_post_async(content))
     finally:
         loop.close()
 
