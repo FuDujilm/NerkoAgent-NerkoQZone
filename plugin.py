@@ -1,45 +1,19 @@
-"""
-plugin.py
-"""
+"""Nerko Agent plugin entry point for the Maizone (QZone) integration."""
 
-from pathlib import Path
+from __future__ import annotations
+
 import asyncio
-from typing import Any, Optional, List
-
-from nekro_agent.api.plugin import NekroPlugin, ConfigBase, ExtraField, SandboxMethodType
-from nekro_agent.api.schemas import AgentCtx
-from nekro_agent.api import core
-from pydantic import Field
-
-# 导入原插件实现（用于任务与工具函数）
-from .scheduled_tasks import FeedMonitor, ScheduleSender
-from . import utils as qzone_utils
-
-import base64
-import random
-import re
 from pathlib import Path
-from typing import Literal, Optional, Dict, Any
-
-import aiofiles
-import magic
-from httpx import AsyncClient, Timeout
-from pydantic import Field
+from typing import Any, List, Optional
 
 from nekro_agent.api import core
-from nekro_agent.api.plugin import (
-    ConfigBase,
-    ExtraField,
-    NekroPlugin,
-    SandboxMethodType,
-)
+from nekro_agent.api.plugin import ConfigBase, NekroPlugin, SandboxMethodType
 from nekro_agent.api.schemas import AgentCtx
-from nekro_agent.core import logger
-from nekro_agent.core.config import config as global_config
-from nekro_agent.services.agent.creator import ContentSegment, OpenAIChatMessage
-from nekro_agent.services.agent.openai import gen_openai_chat_response
-from nekro_agent.tools.common_util import limited_text_output
-from nekro_agent.tools.path_convertor import convert_to_host_path
+from pydantic import Field
+
+from . import utils as qzone_utils
+from .scheduled_tasks import FeedMonitor, ScheduleSender
+from src.plugin_system.core import component_registry
 
 
 plugin = NekroPlugin(
@@ -86,6 +60,9 @@ class QzoneConfig(ConfigBase):
     send_ai_probability: float = Field(default=0.5, title="AI probability", description="When mode is random, probability to use AI for image generation (0.0-1.0)")
     send_image_number: int = Field(default=1, title="Number of images", description="Number of images to generate/send (1-4)")
     send_history_number: int = Field(default=5, title="History count", description="Number of past posts to include when building history prompts")
+    models_image_provider: str = Field(default="SiliconFlow", title="Image provider", description="Provider used for AI image generation")
+    models_image_model: str = Field(default="Kwai-Kolors/Kolors", title="Image model", description="Model name for AI image generation")
+    models_image_ref: bool = Field(default=False, title="Enable reference image", description="Allow sending reference image for AI prompts")
     read_permission: List[str] = Field(default_factory=list, title="Read permission list", description="List of identifiers allowed/denied for read actions")
     read_permission_type: str = Field(default="blacklist", title="Read permission type", description="Permission mode: blacklist or whitelist")
     read_read_number: int = Field(default=5, title="Read number", description="Default number of posts to read when performing read actions")
@@ -122,6 +99,14 @@ class AdapterPlugin:
             return getattr(cfg, attr, default)
         except Exception:
             return default
+
+
+# 将 Nerko 插件暴露给兼容层，供旧代码查询配置与模型
+component_registry.register_plugin(
+    "MaizonePlugin",
+    plugin_factory=lambda: plugin,
+    config_model=QzoneConfig,
+)
 @plugin.mount_init_method()
 async def initialize_plugin():
     """插件初始化：根据配置启动监控/定时任务（适配原有实现）。"""
