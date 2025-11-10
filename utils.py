@@ -327,7 +327,10 @@ async def send_feed(message: str,
         if api_key := config_api.get_plugin_config(plugin_config, "models.api_key", ""):
             models = llm_api.get_available_models()
             prompt_model = config_api.get_plugin_config(plugin_config, "models.text_model", "replyer")  # 获取模型配置
-            model_config = models[prompt_model]
+            model_config = models.get(prompt_model)
+            if not model_config:
+                logger.error(f"未找到可用的提示词模型: {prompt_model}")
+                return False
             personality = config_api.get_global_config("personality.personality", "一只猫娘")  # 人格
             image_provider = config_api.get_plugin_config(plugin_config, "models.image_provider", "SiliconFlow")
             image_model = config_api.get_plugin_config(plugin_config, "models.image_model",
