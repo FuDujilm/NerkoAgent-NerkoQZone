@@ -119,8 +119,9 @@ class FeedMonitor:
         #模型配置
         models = llm_api.get_available_models()
         text_model = self.plugin.get_config("models.text_model", "replyer")
-        model_config = models[text_model]
+        model_config = models.get(text_model)
         if not model_config:
+            logger.error(f"未找到可用的文本模型: {text_model}")
             return False, "未配置LLM模型"
 
         bot_personality = config_api.get_global_config("personality.personality", "一个机器人")
@@ -389,9 +390,9 @@ class ScheduleSender:
         # 模型配置
         models = llm_api.get_available_models()
         text_model = self.plugin.get_config("models.text_model", "replyer")
-        model_config = models[text_model]
+        model_config = models.get(text_model)
         if not model_config:
-            logger.error("未配置LLM模型")
+            logger.error(f"未找到可用的文本模型: {text_model}")
             return
 
         # 获取主题设置

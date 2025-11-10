@@ -1,45 +1,21 @@
-"""
-plugin.py
-"""
+"""Nerko Agent plugin entry point for the Maizone (QZone) integration."""
 
-from pathlib import Path
+from __future__ import annotations
+
 import asyncio
-from typing import Any, Optional, List
-
-from nekro_agent.api.plugin import NekroPlugin, ConfigBase, ExtraField, SandboxMethodType
-from nekro_agent.api.schemas import AgentCtx
-from nekro_agent.api import core
-from pydantic import Field
-
-# 导入原插件实现（用于任务与工具函数）
-from .scheduled_tasks import FeedMonitor, ScheduleSender
-from . import utils as qzone_utils
-
-import base64
-import random
-import re
 from pathlib import Path
-from typing import Literal, Optional, Dict, Any
-
-import aiofiles
-import magic
-from httpx import AsyncClient, Timeout
-from pydantic import Field
+from typing import Any, List, Optional
 
 from nekro_agent.api import core
-from nekro_agent.api.plugin import (
-    ConfigBase,
-    ExtraField,
-    NekroPlugin,
-    SandboxMethodType,
-)
+from nekro_agent.api.plugin import ConfigBase, NekroPlugin, SandboxMethodType
 from nekro_agent.api.schemas import AgentCtx
-from nekro_agent.core import logger
-from nekro_agent.core.config import config as global_config
-from nekro_agent.services.agent.creator import ContentSegment, OpenAIChatMessage
-from nekro_agent.services.agent.openai import gen_openai_chat_response
-from nekro_agent.tools.common_util import limited_text_output
-from nekro_agent.tools.path_convertor import convert_to_host_path
+from pydantic import Field
+
+from . import utils as qzone_utils
+from .qzone_api import ensure_qzone_api
+from .scheduled_tasks import FeedMonitor, ScheduleSender
+from src.plugin_system.apis import llm_api
+from src.plugin_system.core import component_registry
 
 
 plugin = NekroPlugin(
@@ -86,6 +62,9 @@ class QzoneConfig(ConfigBase):
     send_ai_probability: float = Field(default=0.5, title="AI probability", description="When mode is random, probability to use AI for image generation (0.0-1.0)")
     send_image_number: int = Field(default=1, title="Number of images", description="Number of images to generate/send (1-4)")
     send_history_number: int = Field(default=5, title="History count", description="Number of past posts to include when building history prompts")
+    models_image_provider: str = Field(default="SiliconFlow", title="Image provider", description="Provider used for AI image generation")
+    models_image_model: str = Field(default="Kwai-Kolors/Kolors", title="Image model", description="Model name for AI image generation")
+    models_image_ref: bool = Field(default=False, title="Enable reference image", description="Allow sending reference image for AI prompts")
     read_permission: List[str] = Field(default_factory=list, title="Read permission list", description="List of identifiers allowed/denied for read actions")
     read_permission_type: str = Field(default="blacklist", title="Read permission type", description="Permission mode: blacklist or whitelist")
     read_read_number: int = Field(default=5, title="Read number", description="Default number of posts to read when performing read actions")
@@ -122,6 +101,14 @@ class AdapterPlugin:
             return getattr(cfg, attr, default)
         except Exception:
             return default
+
+
+# 将 Nerko 插件暴露给兼容层，供旧代码查询配置与模型
+component_registry.register_plugin(
+    "MaizonePlugin",
+    plugin_factory=lambda: plugin,
+    config_model=QzoneConfig,
+)
 @plugin.mount_init_method()
 async def initialize_plugin():
     """插件初始化：根据配置启动监控/定时任务（适配原有实现）。"""
@@ -204,4 +191,82 @@ async def read_feed_tool(_ctx: AgentCtx, target_qq: str, num: int = 5) -> str:
     except Exception as e:
         core.logger.error(f"read_feed_tool 失败: {e}")
         return "error"
+
+
+@plugin.mount_sandbox_method(SandboxMethodType.TEST, name="测试Napcat连接")
+async def test_napcat_connection(_ctx: AgentCtx) -> str:
+    """测试 Napcat HTTP 服务与 Cookie 刷新能力是否正常。"""
+    try:
+        qzone = await ensure_qzone_api()
+        if qzone is None:
+            return "failed: 无法创建 QzoneAPI，请检查 Napcat/Cookie 配置"
+
+        uin = getattr(qzone, "uin", 0)
+        nickname = getattr(qzone, "qq_nickname", "")
+        parts = []
+        if uin:
+            parts.append(f"uin={uin}")
+        if nickname:
+            parts.append(f"昵称={nickname}")
+        extra = "，".join(parts) if parts else ""
+        return "success" + (f"（{extra}）" if extra else "")
+    except Exception as e:
+        core.logger.error(f"test_napcat_connection 失败: {e}")
+        return f"error: {e}"
+
+
+@plugin.mount_sandbox_method(SandboxMethodType.TEST, name="测试模型调用")
+async def test_model_generation(_ctx: AgentCtx, prompt: str = "请简单介绍一下你自己") -> str:
+    """调用配置的文本模型生成一句话，验证模型配置是否可用。"""
+
+    try:
+        models = llm_api.get_available_models()
+        if not models:
+            return "failed: 未找到可用的文本模型，请检查模型组/模型名称配置"
+
+        model_name, model_cfg = next(iter(models.items()))
+        success, output, _reasoning, used_model = await llm_api.generate_with_model(
+            prompt=prompt,
+            model_config=model_cfg,
+            request_type="maizone.test",
+            temperature=0.1,
+            max_tokens=128,
+        )
+
+        if not success:
+            return f"failed: 模型 {used_model or model_name} 调用失败"
+
+        preview = (output or "").strip().replace("\n", " ")
+        if len(preview) > 80:
+            preview = preview[:77] + "..."
+        return f"success: 使用 {used_model or model_name} 生成 → {preview or '（无输出）'}"
+    except Exception as e:
+        core.logger.error(f"test_model_generation 失败: {e}")
+        return f"error: {e}"
+
+
+async def _run_qzone_diag_async() -> str:
+    """依次调用测试沙箱方法，返回简明诊断结果。"""
+
+    napcat_result = await test_napcat_connection(None)
+    model_result = await test_model_generation(None)
+
+    lines = [f"Napcat: {napcat_result}", f"Model: {model_result}"]
+    return "\n".join(lines)
+
+
+def qzone_diag() -> str:
+    """兼容旧版 `/exec qzone_diag()` 调试命令的同步入口。"""
+
+    try:
+        return asyncio.run(_run_qzone_diag_async())
+    except RuntimeError as exc:  # pragma: no cover - 仅在已有事件循环时触发
+        if "asyncio.run()" not in str(exc):
+            raise
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run_qzone_diag_async())
+    finally:
+        loop.close()
 
