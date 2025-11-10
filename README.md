@@ -81,14 +81,12 @@ Maizone 是一个为 Nerko Agent 设计的 QQ 空间自动化插件，支持自�
 
 ### 沙箱工具
 
-插件提供以下沙箱工具/测试方法，可在对话流程、自动化任务或手动调试中调用：
+插件提供两个沙箱工具，可在对话流程、自动化任务或手动测试中调用：
 
-- `发送说说`（TOOL）：输入文本后，插件会根据配置自动选择图片并发布说说。
-- `读取说说`（TOOL）：输入目标 QQ 号和读取条数，返回最近动态列表。
-- `测试Napcat连接`（TEST）：刷新 Napcat Cookie 并尝试创建 QzoneAPI，用于验证 Napcat Host/Port/Token 是否可用。
-- `测试模型调用`（TEST）：调用 Nerko Agent 中配置的文本模型，返回简短生成结果，便于检查模型组/模型名称是否正确。
+- `发送说说`：输入文本后，插件会根据配置自动选择图片并发布说说。
+- `读取说说`：输入目标 QQ 号和读取条数，返回最近动态列表。
 
-这些方法的签名符合 Nerko Agent 的 `SandboxMethodType.TOOL/TEST` 规范，可在工作流或测试面板中直接引用。
+这些方法的签名符合 Nerko Agent 的 `SandboxMethodType.TOOL` 规范，可在工作流中直接引用。
 
 ### 自动任务
 
@@ -101,7 +99,7 @@ Maizone 是一个为 Nerko Agent 设计的 QQ 空间自动化插件，支持自�
 
 ## 调试与 `/exec` 用法
 
-Nerko Agent 在聊天窗口或控制台中提供了 `/exec` 命令，便于直接触发插件暴露的沙箱方法。Maizone 插件注册了 `发送说说`、`读取说说` 两个工具方法以及 `测试Napcat连接`、`测试模型调用` 两个测试方法，可以按照以下格式调试：
+Nerko Agent 在聊天窗口或控制台中提供了 `/exec` 命令，便于直接触发插件暴露的沙箱方法。Maizone 插件注册了 `发送说说` 与 `读取说说` 两个工具方法，可以按照以下格式调试：
 
 ```text
 /exec plugin="Maizone (QZone)" method="发送说说" args='{"message": "今天也要记得打卡！"}'
@@ -117,26 +115,7 @@ Nerko Agent 在聊天窗口或控制台中提供了 `/exec` 命令，便于直�
 /exec plugin="Maizone (QZone)" method="读取说说" args='{"target_qq": "123456", "num": 3}'
 ```
 
-测试方法同样可以通过 `/exec` 调用，例如：
-
-```text
-/exec plugin="Maizone (QZone)" method="测试Napcat连接"
-/exec plugin="Maizone (QZone)" method="测试模型调用" args='{"prompt": "请用一句话打个招呼"}'
-```
-
 > 提示：在 `/exec` 命令中，JSON 字符串需要使用单引号包裹，避免与聊天窗口的双引号冲突。如需查看插件日志，可同时在 Agent 的控制台查看 `Maizone` 相关输出，便于定位请求或配置问题。
-
-### 兼容旧版 `/exec qzone_diag()`
-
-部分旧文档或自动化脚本仍使用 `/exec qzone_diag()` 命令。插件依然保留该入口，会依次执行“测试Napcat连接”和“测试模型调用”两个沙箱测试方法，并返回汇总诊断结果，便于快速确认 Napcat 与模型配置。
-
-同样地，旧版本中常见的 `/exec qzone_live_post()` 也继续有效：
-
-```text
-/exec qzone_live_post()
-```
-
-该命令会即时触发一次说说发布流程：如果不传参数，则复用“定时发送说说”逻辑自动生成内容；若需手动指定文案，可在括号内传入字符串，例如 `/exec qzone_live_post("今晚加油💪")`。命令会返回 `success` 或失败原因，方便在迁移期间沿用原有脚本。
 
 ## AI 工作流说明
 
