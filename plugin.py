@@ -1,45 +1,26 @@
-"""
-plugin.py
-"""
+"""Nerko Agent plugin entry point for the Maizone (QZone) integration."""
 
-from pathlib import Path
+from __future__ import annotations
+
 import asyncio
-from typing import Any, Optional, List
-
-from nekro_agent.api.plugin import NekroPlugin, ConfigBase, ExtraField, SandboxMethodType
-from nekro_agent.api.schemas import AgentCtx
-from nekro_agent.api import core
-from pydantic import Field
-
-# 导入原插件实现（用于任务与工具函数）
-from .scheduled_tasks import FeedMonitor, ScheduleSender
-from . import utils as qzone_utils
-
-import base64
-import random
-import re
 from pathlib import Path
-from typing import Literal, Optional, Dict, Any
-
-import aiofiles
-import magic
-from httpx import AsyncClient, Timeout
-from pydantic import Field
+from typing import Any, List, Optional
 
 from nekro_agent.api import core
-from nekro_agent.api.plugin import (
-    ConfigBase,
-    ExtraField,
-    NekroPlugin,
-    SandboxMethodType,
-)
+from nekro_agent.api.plugin import ConfigBase, NekroPlugin, SandboxMethodType
 from nekro_agent.api.schemas import AgentCtx
-from nekro_agent.core import logger
-from nekro_agent.core.config import config as global_config
-from nekro_agent.services.agent.creator import ContentSegment, OpenAIChatMessage
-from nekro_agent.services.agent.openai import gen_openai_chat_response
-from nekro_agent.tools.common_util import limited_text_output
-from nekro_agent.tools.path_convertor import convert_to_host_path
+from pydantic import Field
+
+from . import utils as qzone_utils
+from .qzone_api import ensure_qzone_api
+from .scheduled_tasks import (
+    FeedMonitor,
+    ScheduleSender,
+    _load_processed_list,
+    _save_processed_list,
+)
+from src.plugin_system.apis import config_api, llm_api
+from src.plugin_system.core import component_registry
 
 
 plugin = NekroPlugin(
@@ -86,6 +67,9 @@ class QzoneConfig(ConfigBase):
     send_ai_probability: float = Field(default=0.5, title="AI probability", description="When mode is random, probability to use AI for image generation (0.0-1.0)")
     send_image_number: int = Field(default=1, title="Number of images", description="Number of images to generate/send (1-4)")
     send_history_number: int = Field(default=5, title="History count", description="Number of past posts to include when building history prompts")
+    models_image_provider: str = Field(default="SiliconFlow", title="Image provider", description="Provider used for AI image generation")
+    models_image_model: str = Field(default="Kwai-Kolors/Kolors", title="Image model", description="Model name for AI image generation")
+    models_image_ref: bool = Field(default=False, title="Enable reference image", description="Allow sending reference image for AI prompts")
     read_permission: List[str] = Field(default_factory=list, title="Read permission list", description="List of identifiers allowed/denied for read actions")
     read_permission_type: str = Field(default="blacklist", title="Read permission type", description="Permission mode: blacklist or whitelist")
     read_read_number: int = Field(default=5, title="Read number", description="Default number of posts to read when performing read actions")
@@ -122,6 +106,14 @@ class AdapterPlugin:
             return getattr(cfg, attr, default)
         except Exception:
             return default
+
+
+# 将 Nerko 插件暴露给兼容层，供旧代码查询配置与模型
+component_registry.register_plugin(
+    "MaizonePlugin",
+    plugin_factory=lambda: plugin,
+    config_model=QzoneConfig,
+)
 @plugin.mount_init_method()
 async def initialize_plugin():
     """插件初始化：根据配置启动监控/定时任务（适配原有实现）。"""
@@ -204,4 +196,277 @@ async def read_feed_tool(_ctx: AgentCtx, target_qq: str, num: int = 5) -> str:
     except Exception as e:
         core.logger.error(f"read_feed_tool 失败: {e}")
         return "error"
+
+
+@plugin.mount_sandbox_method(SandboxMethodType.TEST, name="测试Napcat连接")
+async def test_napcat_connection(_ctx: AgentCtx) -> str:
+    """测试 Napcat HTTP 服务与 Cookie 刷新能力是否正常。"""
+    try:
+        qzone = await ensure_qzone_api()
+        if qzone is None:
+            return "failed: 无法创建 QzoneAPI，请检查 Napcat/Cookie 配置"
+
+        uin = getattr(qzone, "uin", 0)
+        nickname = getattr(qzone, "qq_nickname", "")
+        parts = []
+        if uin:
+            parts.append(f"uin={uin}")
+        if nickname:
+            parts.append(f"昵称={nickname}")
+        extra = "，".join(parts) if parts else ""
+        return "success" + (f"（{extra}）" if extra else "")
+    except Exception as e:
+        core.logger.error(f"test_napcat_connection 失败: {e}")
+        return f"error: {e}"
+
+
+@plugin.mount_sandbox_method(SandboxMethodType.TEST, name="测试模型调用")
+async def test_model_generation(_ctx: AgentCtx, prompt: str = "请简单介绍一下你自己") -> str:
+    """调用配置的文本模型生成一句话，验证模型配置是否可用。"""
+
+    try:
+        models = llm_api.get_available_models()
+        if not models:
+            return "failed: 未找到可用的文本模型，请检查模型组/模型名称配置"
+
+        model_name, model_cfg = next(iter(models.items()))
+        success, output, _reasoning, used_model = await llm_api.generate_with_model(
+            prompt=prompt,
+            model_config=model_cfg,
+            request_type="maizone.test",
+            temperature=0.1,
+            max_tokens=128,
+        )
+
+        if not success:
+            return f"failed: 模型 {used_model or model_name} 调用失败"
+
+        preview = (output or "").strip().replace("\n", " ")
+        if len(preview) > 80:
+            preview = preview[:77] + "..."
+        return f"success: 使用 {used_model or model_name} 生成 → {preview or '（无输出）'}"
+    except Exception as e:
+        core.logger.error(f"test_model_generation 失败: {e}")
+        return f"error: {e}"
+
+
+async def _run_qzone_diag_async() -> str:
+    """依次调用测试沙箱方法，返回简明诊断结果。"""
+
+    napcat_result = await test_napcat_connection(None)
+    model_result = await test_model_generation(None)
+
+    lines = [f"Napcat: {napcat_result}", f"Model: {model_result}"]
+    return "\n".join(lines)
+
+
+def qzone_diag() -> str:
+    """兼容旧版 `/exec qzone_diag()` 调试命令的同步入口。"""
+
+    try:
+        return asyncio.run(_run_qzone_diag_async())
+    except RuntimeError as exc:  # pragma: no cover - 仅在已有事件循环时触发
+        if "asyncio.run()" not in str(exc):
+            raise
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run_qzone_diag_async())
+    finally:
+        loop.close()
+
+
+async def _run_check_feeds_async() -> str:
+    """兼容旧版 `/exec check_feeds()` 调试命令的异步实现。"""
+
+    adapter = AdapterPlugin(plugin)
+    monitor = FeedMonitor(adapter)
+    processed = _load_processed_list()
+
+    try:
+        result = await monitor.check_feeds(processed)
+    except Exception as exc:  # pragma: no cover - 网络/模型异常
+        core.logger.error(f"check_feeds 运行失败: {exc}")
+        return f"error: {exc}"
+    finally:
+        try:
+            _save_processed_list(processed)
+        except Exception as exc:  # pragma: no cover - IO 异常
+            core.logger.warning(f"保存 check_feeds 处理记录失败: {exc}")
+
+    if isinstance(result, tuple):
+        success = bool(result[0])
+        detail = ""
+        if len(result) > 1 and result[1] is not None:
+            detail = str(result[1])
+    else:  # pragma: no cover - 理论上返回 tuple
+        success = bool(result)
+        detail = ""
+
+    if success:
+        if detail and detail != "success":
+            return f"success: {detail}"
+        return "success"
+
+    return f"failed: {detail or '未知错误'}"
+
+
+def check_feeds() -> str:
+    """兼容旧版 `/exec check_feeds()` 调试命令的同步入口。"""
+
+    try:
+        return asyncio.run(_run_check_feeds_async())
+    except RuntimeError as exc:  # pragma: no cover - 仅在已有事件循环时触发
+        if "asyncio.run()" not in str(exc):
+            raise
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run_check_feeds_async())
+    finally:
+        loop.close()
+
+
+async def _run_qzone_live_post_async(content: Optional[str] = None) -> str:
+    """向后兼容的实时发说说入口。"""
+
+    try:
+        cfg = plugin.get_config(QzoneConfig)
+    except Exception as exc:  # pragma: no cover - 配置异常极少发生
+        core.logger.error(f"获取插件配置失败: {exc}")
+        return f"error: {exc}"
+
+    if content:
+        try:
+            image_dir = str(Path(__file__).parent.resolve() / "images")
+            ok = await qzone_utils.send_feed(
+                content,
+                image_dir,
+                cfg.send_enable_image,
+                cfg.send_image_mode,
+                cfg.send_ai_probability,
+                cfg.send_image_number,
+            )
+            return "success" if ok else "failed: 发送说说失败"
+        except Exception as exc:  # pragma: no cover - 网络/IO 异常
+            core.logger.error(f"qzone_live_post 发送自定义说说失败: {exc}")
+            return f"error: {exc}"
+
+    adapter = AdapterPlugin(plugin)
+    scheduler = ScheduleSender(adapter)
+
+    try:
+        result = await scheduler.send_scheduled_feed()
+    except Exception as exc:  # pragma: no cover - 捕获定时任务内部异常
+        core.logger.error(f"qzone_live_post 生成定时说说失败: {exc}")
+        return f"error: {exc}"
+
+    if isinstance(result, tuple):
+        success = bool(result[0])
+        detail_msg = result[1] if len(result) > 1 else ""
+        if not success:
+            detail = str(detail_msg or "未知错误")
+            return f"failed: {detail}"
+
+    return "success"
+
+
+def qzone_live_post(content: Optional[str] = None) -> str:
+    """兼容旧版 `/exec qzone_live_post()` 调试命令的同步入口。"""
+
+    try:
+        return asyncio.run(_run_qzone_live_post_async(content))
+    except RuntimeError as exc:  # pragma: no cover - 仅在已有事件循环时触发
+        if "asyncio.run()" not in str(exc):
+            raise
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run_qzone_live_post_async(content))
+    finally:
+        loop.close()
+
+
+async def _run_qzone_live_post_llm_async(prompt: Optional[str] = None) -> str:
+    """调用 LLM 生成说说内容但不发送，便于测试模型输出。"""
+
+    adapter = AdapterPlugin(plugin)
+    models = llm_api.get_available_models()
+    if not models:
+        return "failed: 未找到可用的文本模型，请检查模型组或模型名称配置"
+
+    text_model = adapter.get_config("models.text_model", "replyer")
+    model_config = models.get(text_model)
+    chosen_model = text_model
+
+    if model_config is None:
+        chosen_model, model_config = next(iter(models.items()))
+
+    final_prompt = prompt
+    if not final_prompt:
+        personality = config_api.get_global_config("personality.personality", "一个热情的QQ空间博主")
+        style = config_api.get_global_config("personality.reply_style", "内容积极向上")
+        final_prompt = (
+            "请以第一人称撰写一段适合发布在QQ空间的短文，限制在80字以内。"
+            f"保持语气：{style}。你的设定是：{personality}。"
+            "避免使用表情、引号、括号或@，只输出正文。"
+        )
+
+    if adapter.get_config("models.show_prompt", False):
+        core.logger.info(f"qzone_live_post_llm prompt → {final_prompt}")
+
+    try:
+        result = await llm_api.generate_with_model(
+            prompt=final_prompt,
+            model_config=model_config,
+            request_type="maizone.live_post_llm_test",
+            temperature=0.35,
+            max_tokens=512,
+        )
+    except Exception as exc:  # pragma: no cover - sandbox 运行时异常
+        core.logger.error(f"qzone_live_post_llm 调用模型失败: {exc}")
+        return f"error: {exc}"
+
+    success = False
+    output = ""
+    used_model = chosen_model
+
+    if isinstance(result, tuple):
+        if len(result) >= 1:
+            success = bool(result[0])
+        if len(result) >= 2 and result[1] is not None:
+            output = str(result[1])
+        if len(result) >= 4 and result[3]:
+            used_model = str(result[3])
+    else:  # pragma: no cover - 兼容非 tuple 返回
+        output = str(result)
+
+    if not success:
+        return f"failed: 模型 {used_model or chosen_model} 调用失败"
+
+    preview = (output or "").strip()
+    if not preview:
+        return f"failed: 模型 {used_model or chosen_model} 未返回内容"
+
+    single_line = preview.replace("\n", " ")
+    if len(single_line) > 80:
+        single_line = single_line[:77] + "..."
+
+    return f"success: 使用 {used_model or chosen_model} 生成 → {single_line}"
+
+
+def qzone_live_post_llm(prompt: Optional[str] = None) -> str:
+    """兼容旧版 `/exec qzone_live_post_llm()` 命令的同步入口。"""
+
+    try:
+        return asyncio.run(_run_qzone_live_post_llm_async(prompt))
+    except RuntimeError as exc:  # pragma: no cover - 仅在已有事件循环时触发
+        if "asyncio.run()" not in str(exc):
+            raise
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run_qzone_live_post_llm_async(prompt))
+    finally:
+        loop.close()
 
