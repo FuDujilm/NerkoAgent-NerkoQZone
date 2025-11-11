@@ -23,6 +23,12 @@ from src.plugin_system.apis import config_api, llm_api
 from src.plugin_system.core import component_registry
 
 
+try:  # Older Nerko versions may not yet expose SandboxMethodType.TEST
+    _SANDBOX_TEST_TYPE = SandboxMethodType.TEST
+except AttributeError:  # pragma: no cover - executed only on older SDKs
+    _SANDBOX_TEST_TYPE = SandboxMethodType.TOOL
+
+
 plugin = NekroPlugin(
     name="Maizone (QZone)",
     module_name="qzone_sender",
@@ -198,7 +204,7 @@ async def read_feed_tool(_ctx: AgentCtx, target_qq: str, num: int = 5) -> str:
         return "error"
 
 
-@plugin.mount_sandbox_method(SandboxMethodType.TEST, name="测试Napcat连接")
+@plugin.mount_sandbox_method(_SANDBOX_TEST_TYPE, name="测试Napcat连接")
 async def test_napcat_connection(_ctx: AgentCtx) -> str:
     """测试 Napcat HTTP 服务与 Cookie 刷新能力是否正常。"""
     try:
@@ -220,7 +226,7 @@ async def test_napcat_connection(_ctx: AgentCtx) -> str:
         return f"error: {e}"
 
 
-@plugin.mount_sandbox_method(SandboxMethodType.TEST, name="测试模型调用")
+@plugin.mount_sandbox_method(_SANDBOX_TEST_TYPE, name="测试模型调用")
 async def test_model_generation(_ctx: AgentCtx, prompt: str = "请简单介绍一下你自己") -> str:
     """调用配置的文本模型生成一句话，验证模型配置是否可用。"""
 
