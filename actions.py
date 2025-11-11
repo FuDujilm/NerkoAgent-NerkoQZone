@@ -430,3 +430,11 @@ async def renew_cookies(host: str = "127.0.0.1", port: str = "9999", napcat_toke
     except Exception as e:
         logger.error(f"处理cookie时发生异常: {str(e)}")
         raise RuntimeError(f"处理cookie时发生异常: {str(e)}")
+
+
+def qzone_live_post_llm(prompt: Optional[str] = None) -> str:
+    """Legacy `/exec` wrapper forwarding to `plugin.qzone_live_post_llm`."""
+
+    from .plugin import qzone_live_post_llm as _compat_live_post_llm
+
+    return _compat_live_post_llm(prompt)
