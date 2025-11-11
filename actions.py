@@ -438,3 +438,12 @@ def qzone_live_post_llm(prompt: Optional[str] = None) -> str:
     from .plugin import qzone_live_post_llm as _compat_live_post_llm
 
     return _compat_live_post_llm(prompt)
+
+
+try:  # pragma: no cover - 仅在旧版 `/exec` 需要时执行
+    import builtins
+
+    if getattr(builtins, "qzone_live_post_llm", None) is None:
+        builtins.qzone_live_post_llm = qzone_live_post_llm
+except Exception:
+    pass

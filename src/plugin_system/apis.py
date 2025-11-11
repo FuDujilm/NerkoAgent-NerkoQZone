@@ -64,64 +64,35 @@ class _LLMAdapter:
         return component_registry.get_plugin(self._PLUGIN_KEY)
 
     def get_available_models(self) -> Dict[str, Dict[str, Any]]:
-        plugin = self._get_plugin()
-        if plugin is None:
+        """Return chat models discoverable via the Nerko runtime."""
+
+        if _agent_core is None:
+            return {}
+
+        list_models = getattr(_agent_core, "list_model_group_models", None)
+        if not callable(list_models):
             return {}
 
         config = component_registry.get_plugin_config(self._PLUGIN_KEY)
-        models: Dict[str, Dict[str, Any]] = {}
-
         group_name = getattr(config, "TEXT_MODEL_GROUP", None) if config else None
-        text_model = getattr(config, "models_text_model", "") if config else ""
 
-        fetchers = []
-        if plugin is not None:
-            fetchers.extend(
-                filter(
-                    callable,
-                    [
-                        getattr(plugin, "list_model_group_models", None),
-                        getattr(plugin, "get_model_group_models", None),
-                    ],
-                )
-            )
-        if _agent_core is not None:
-            fetchers.extend(
-                filter(
-                    callable,
-                    [
-                        getattr(_agent_core, "list_model_group_models", None),
-                        getattr(_agent_core, "get_model_group_models", None),
-                    ],
-                )
-            )
-
-        for fetcher in fetchers:
+        try:
+            if group_name:
+                result = list_models(group_name, model_type="chat")
+            else:
+                result = list_models(model_type="chat")
+        except TypeError:
             try:
-                if group_name:
-                    result = fetcher(group_name, model_type="chat")
-                else:
-                    result = fetcher(model_type="chat")
-            except TypeError:
-                try:
-                    result = fetcher(group_name) if group_name else fetcher()
-                except Exception:
-                    continue
+                result = list_models(group_name) if group_name else list_models()
             except Exception:
-                continue
+                return {}
+        except Exception:
+            return {}
 
-            if isinstance(result, dict) and result:
-                models.update(result)
-                break
+        if isinstance(result, dict):
+            return result
 
-        if text_model and text_model not in models:
-            models[text_model] = {
-                "model": text_model,
-                "group": group_name,
-                "provider": getattr(config, "models_image_provider", None) if config else None,
-            }
-
-        return models
+        return {}
 
     async def generate_with_model(
         self,
@@ -134,7 +105,11 @@ class _LLMAdapter:
         **kwargs: Any,
     ):
         plugin = self._get_plugin()
-        if plugin is None:
+        if plugin is None or _agent_core is None:
+            return False, "", "", ""
+
+        sandbox_call_model = getattr(_agent_core, "sandbox_call_model", None)
+        if not callable(sandbox_call_model):
             return False, "", "", ""
 
         call_payload: Dict[str, Any] = {
@@ -148,12 +123,7 @@ class _LLMAdapter:
         call_payload.update(kwargs)
 
         try:
-            if hasattr(plugin, "sandbox_call_model") and callable(plugin.sandbox_call_model):
-                result = await plugin.sandbox_call_model(**call_payload)
-            elif _agent_core and hasattr(_agent_core, "sandbox_call_model"):
-                result = await _agent_core.sandbox_call_model(plugin, **call_payload)
-            else:
-                return False, "", "", ""
+            result = await sandbox_call_model(plugin, **call_payload)
         except Exception:
             return False, "", "", ""
 
