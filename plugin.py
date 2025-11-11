@@ -12,7 +12,14 @@ from nekro_agent.api.schemas import AgentCtx
 from pydantic import Field
 
 from . import utils as qzone_utils
-from .scheduled_tasks import FeedMonitor, ScheduleSender
+from .qzone_api import ensure_qzone_api
+from .scheduled_tasks import (
+    FeedMonitor,
+    ScheduleSender,
+    _load_processed_list,
+    _save_processed_list,
+)
+from src.plugin_system.apis import config_api, llm_api
 from src.plugin_system.core import component_registry
 
 
@@ -265,6 +272,201 @@ def qzone_diag() -> str:
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(_run_qzone_diag_async())
+    finally:
+        loop.close()
+
+
+async def _run_check_feeds_async() -> str:
+    """兼容旧版 `/exec check_feeds()` 调试命令的异步实现。"""
+
+    adapter = AdapterPlugin(plugin)
+    monitor = FeedMonitor(adapter)
+    processed = _load_processed_list()
+
+    try:
+        result = await monitor.check_feeds(processed)
+    except Exception as exc:  # pragma: no cover - 网络/模型异常
+        core.logger.error(f"check_feeds 运行失败: {exc}")
+        return f"error: {exc}"
+    finally:
+        try:
+            _save_processed_list(processed)
+        except Exception as exc:  # pragma: no cover - IO 异常
+            core.logger.warning(f"保存 check_feeds 处理记录失败: {exc}")
+
+    if isinstance(result, tuple):
+        success = bool(result[0])
+        detail = ""
+        if len(result) > 1 and result[1] is not None:
+            detail = str(result[1])
+    else:  # pragma: no cover - 理论上返回 tuple
+        success = bool(result)
+        detail = ""
+
+    if success:
+        if detail and detail != "success":
+            return f"success: {detail}"
+        return "success"
+
+    return f"failed: {detail or '未知错误'}"
+
+
+def check_feeds() -> str:
+    """兼容旧版 `/exec check_feeds()` 调试命令的同步入口。"""
+
+    try:
+        return asyncio.run(_run_check_feeds_async())
+    except RuntimeError as exc:  # pragma: no cover - 仅在已有事件循环时触发
+        if "asyncio.run()" not in str(exc):
+            raise
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run_check_feeds_async())
+    finally:
+        loop.close()
+
+
+async def _run_qzone_live_post_async(content: Optional[str] = None) -> str:
+    """向后兼容的实时发说说入口。"""
+
+    try:
+        cfg = plugin.get_config(QzoneConfig)
+    except Exception as exc:  # pragma: no cover - 配置异常极少发生
+        core.logger.error(f"获取插件配置失败: {exc}")
+        return f"error: {exc}"
+
+    if content:
+        try:
+            image_dir = str(Path(__file__).parent.resolve() / "images")
+            ok = await qzone_utils.send_feed(
+                content,
+                image_dir,
+                cfg.send_enable_image,
+                cfg.send_image_mode,
+                cfg.send_ai_probability,
+                cfg.send_image_number,
+            )
+            return "success" if ok else "failed: 发送说说失败"
+        except Exception as exc:  # pragma: no cover - 网络/IO 异常
+            core.logger.error(f"qzone_live_post 发送自定义说说失败: {exc}")
+            return f"error: {exc}"
+
+    adapter = AdapterPlugin(plugin)
+    scheduler = ScheduleSender(adapter)
+
+    try:
+        result = await scheduler.send_scheduled_feed()
+    except Exception as exc:  # pragma: no cover - 捕获定时任务内部异常
+        core.logger.error(f"qzone_live_post 生成定时说说失败: {exc}")
+        return f"error: {exc}"
+
+    if isinstance(result, tuple):
+        success = bool(result[0])
+        detail_msg = result[1] if len(result) > 1 else ""
+        if not success:
+            detail = str(detail_msg or "未知错误")
+            return f"failed: {detail}"
+
+    return "success"
+
+
+def qzone_live_post(content: Optional[str] = None) -> str:
+    """兼容旧版 `/exec qzone_live_post()` 调试命令的同步入口。"""
+
+    try:
+        return asyncio.run(_run_qzone_live_post_async(content))
+    except RuntimeError as exc:  # pragma: no cover - 仅在已有事件循环时触发
+        if "asyncio.run()" not in str(exc):
+            raise
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run_qzone_live_post_async(content))
+    finally:
+        loop.close()
+
+
+async def _run_qzone_live_post_llm_async(prompt: Optional[str] = None) -> str:
+    """调用 LLM 生成说说内容但不发送，便于测试模型输出。"""
+
+    adapter = AdapterPlugin(plugin)
+    models = llm_api.get_available_models()
+    if not models:
+        return "failed: 未找到可用的文本模型，请检查模型组或模型名称配置"
+
+    text_model = adapter.get_config("models.text_model", "replyer")
+    model_config = models.get(text_model)
+    chosen_model = text_model
+
+    if model_config is None:
+        chosen_model, model_config = next(iter(models.items()))
+
+    final_prompt = prompt
+    if not final_prompt:
+        personality = config_api.get_global_config("personality.personality", "一个热情的QQ空间博主")
+        style = config_api.get_global_config("personality.reply_style", "内容积极向上")
+        final_prompt = (
+            "请以第一人称撰写一段适合发布在QQ空间的短文，限制在80字以内。"
+            f"保持语气：{style}。你的设定是：{personality}。"
+            "避免使用表情、引号、括号或@，只输出正文。"
+        )
+
+    if adapter.get_config("models.show_prompt", False):
+        core.logger.info(f"qzone_live_post_llm prompt → {final_prompt}")
+
+    try:
+        result = await llm_api.generate_with_model(
+            prompt=final_prompt,
+            model_config=model_config,
+            request_type="maizone.live_post_llm_test",
+            temperature=0.35,
+            max_tokens=512,
+        )
+    except Exception as exc:  # pragma: no cover - sandbox 运行时异常
+        core.logger.error(f"qzone_live_post_llm 调用模型失败: {exc}")
+        return f"error: {exc}"
+
+    success = False
+    output = ""
+    used_model = chosen_model
+
+    if isinstance(result, tuple):
+        if len(result) >= 1:
+            success = bool(result[0])
+        if len(result) >= 2 and result[1] is not None:
+            output = str(result[1])
+        if len(result) >= 4 and result[3]:
+            used_model = str(result[3])
+    else:  # pragma: no cover - 兼容非 tuple 返回
+        output = str(result)
+
+    if not success:
+        return f"failed: 模型 {used_model or chosen_model} 调用失败"
+
+    preview = (output or "").strip()
+    if not preview:
+        return f"failed: 模型 {used_model or chosen_model} 未返回内容"
+
+    single_line = preview.replace("\n", " ")
+    if len(single_line) > 80:
+        single_line = single_line[:77] + "..."
+
+    return f"success: 使用 {used_model or chosen_model} 生成 → {single_line}"
+
+
+def qzone_live_post_llm(prompt: Optional[str] = None) -> str:
+    """兼容旧版 `/exec qzone_live_post_llm()` 命令的同步入口。"""
+
+    try:
+        return asyncio.run(_run_qzone_live_post_llm_async(prompt))
+    except RuntimeError as exc:  # pragma: no cover - 仅在已有事件循环时触发
+        if "asyncio.run()" not in str(exc):
+            raise
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run_qzone_live_post_llm_async(prompt))
     finally:
         loop.close()
 
