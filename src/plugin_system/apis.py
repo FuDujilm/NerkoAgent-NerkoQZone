@@ -66,10 +66,15 @@ class _LLMAdapter:
     def get_available_models(self) -> Dict[str, Dict[str, Any]]:
         """Return chat models discoverable via the Nerko runtime."""
 
-        if _agent_core is None:
-            return {}
+        plugin = self._get_plugin()
+        list_models = None
 
-        list_models = getattr(_agent_core, "list_model_group_models", None)
+        if plugin is not None:
+            list_models = getattr(plugin, "list_model_group_models", None)
+
+        if list_models is None and _agent_core is not None:
+            list_models = getattr(_agent_core, "list_model_group_models", None)
+
         if not callable(list_models):
             return {}
 
@@ -105,11 +110,7 @@ class _LLMAdapter:
         **kwargs: Any,
     ):
         plugin = self._get_plugin()
-        if plugin is None or _agent_core is None:
-            return False, "", "", ""
-
-        sandbox_call_model = getattr(_agent_core, "sandbox_call_model", None)
-        if not callable(sandbox_call_model):
+        if plugin is None:
             return False, "", "", ""
 
         call_payload: Dict[str, Any] = {
@@ -118,14 +119,38 @@ class _LLMAdapter:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+
+        model_name = ""
         if model_config:
             call_payload["model_config"] = model_config
+            if isinstance(model_config, dict):
+                model_name = str(
+                    model_config.get("model")
+                    or model_config.get("model_key")
+                    or model_config.get("name")
+                    or ""
+                )
+                if model_name:
+                    call_payload.setdefault("model", model_name)
         call_payload.update(kwargs)
 
-        try:
-            result = await sandbox_call_model(plugin, **call_payload)
-        except Exception:
-            return False, "", "", ""
+        sandbox_call_model = getattr(plugin, "sandbox_call_model", None)
+        result: Any = None
+        error_message = ""
+
+        if callable(sandbox_call_model):
+            try:
+                result = await sandbox_call_model(**call_payload)
+            except Exception as exc:
+                error_message = str(exc)
+
+        if result is None and _agent_core is not None:
+            sandbox_call_model = getattr(_agent_core, "sandbox_call_model", None)
+            if callable(sandbox_call_model):
+                try:
+                    result = await sandbox_call_model(plugin, **call_payload)
+                except Exception as exc:
+                    error_message = str(exc)
 
         # Result can be either a tuple (success, text, reasoning, model)
         # or a mapping with the same semantic fields.
@@ -142,7 +167,10 @@ class _LLMAdapter:
                 result.get("model") or result.get("model_name", ""),
             )
 
-        return False, "", "", ""
+        if error_message:
+            return False, error_message, error_message, model_name
+
+        return False, "", "", model_name
 
 
 class _PersonStub:

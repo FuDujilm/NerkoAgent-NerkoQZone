@@ -245,6 +245,9 @@ async def test_model_generation(_ctx: AgentCtx, prompt: str = "请简单介绍�
         )
 
         if not success:
+            detail = (output or "").strip()
+            if detail:
+                return f"failed: 模型 {used_model or model_name} 调用失败（{detail}）"
             return f"failed: 模型 {used_model or model_name} 调用失败"
 
         preview = (output or "").strip().replace("\n", " ")
@@ -448,6 +451,9 @@ async def _run_qzone_live_post_llm_async(prompt: Optional[str] = None) -> str:
         output = str(result)
 
     if not success:
+        detail = (output or "").strip()
+        if detail:
+            return f"failed: 模型 {used_model or chosen_model} 调用失败（{detail}）"
         return f"failed: 模型 {used_model or chosen_model} 调用失败"
 
     preview = (output or "").strip()
